@@ -40,12 +40,16 @@ class Settings(BaseSettings):
     paypal_client_secret: str | None = None
     paypal_base_url: str = "https://api-m.sandbox.paypal.com"
 
+    evidence_dir_override: str | None = None
+
     @property
     def data_dir(self) -> Path:
         return BASE_DIR / "data"
 
     @property
     def evidence_dir(self) -> Path:
+        if self.evidence_dir_override:
+            return Path(self.evidence_dir_override)
         return self.data_dir / "evidence"
 
     @property

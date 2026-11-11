@@ -46,62 +46,59 @@ Every transition ──► append-only hash-chained AUDIT LOG
 Hard boundaries:
 
 1. AI providers return observations with confidence only. They cannot reference
-   claims, settlements, or payments.
-2. The claims engine is a pure function of policy terms, verified facts, and
-   fraud signals. Identical inputs produce an identical decision hash.
-3. Only the claims engine can produce `APPROVED`.
-4. Only a `Settlement` with a valid, single-use authorization nonce can be paid.
+   claims, settlements, or payments (`FORBIDDEN_OBSERVATION_KEYS` enforced).
+2. The claims engine (`compute_pure_claim_decision`) is a pure function of policy
+   terms, verified facts, and fraud signals. Identical inputs produce an identical
+   decision hash.
+3. Only the claims engine (or explicit `reviewer`/`admin` resolution of `REVIEW_REQUIRED`)
+   can produce `APPROVED`.
+4. Only a `Settlement` with a valid, single-use authorization nonce (`nonce_used=False`)
+   and verified `authorization_hash` can be paid.
 5. A payment adapter never receives raw telemetry or model output.
 
 ## 4. Module responsibilities
 
 | Module | Responsibility | Status |
 |---|---|---|
-| `core` | Settings, JSON logging, error envelope, API-key auth, request IDs | M0 complete |
-| `db` | Engine, session, declarative base, init | M0 complete |
-| `models` | ORM entities | M0 partial (api_keys, audit_logs, idempotency_keys) |
-| `services.audit` | Hash-chained append-only audit log | M0 complete |
-| `services.idempotency` | Idempotency key lifecycle | M0 complete |
-| `shipment_policy` | Shipments, policies, lifecycle | M1 pending |
-| `monitoring` | Telemetry validation and derived violations | M2 pending |
-| `evidence` | Secure upload, hashing, PDF parsing, image QC | M3 pending |
-| `ai` | Provider interface, Gemini adapter, mock adapter | M3 pending |
-| `verification` | Document/image/telemetry cross-checks | M4 pending |
-| `fraud` | Rules, statistical anomalies, explanations | M4 pending |
-| `claims` | Deterministic eligibility, payout formula, trace | M5 pending |
-| `settlement` | Currency-safe split and authorization nonce | M5 pending |
-| `payments` | Mock and PayPal Sandbox adapters, retries | M6 pending |
-| `dashboard` | Streamlit + AG Grid UI | M7 pending |
-| `simulation` | Repeatable Scenario A/B | M8 pending |
+| `core` | Settings, JSON logging, error envelope, API-key auth, request IDs | Implemented (M0) |
+| `db` | Engine, session, declarative base, init | Implemented (M0) |
+| `models` | All 18 ORM entities (`api_keys`..`payout_attempts`) | Implemented (M0–M6) |
+| `services.audit` | Hash-chained append-only audit log | Implemented (M0) |
+| `services.idempotency` | Idempotency key lifecycle | Implemented (M0) |
+| `party / shipment / policy` | Parties, shipments, policies, lifecycle validation | Implemented (M1) |
+| `monitoring / simulator` | Telemetry validation, derived violations, seeded simulator | Implemented (M2) |
+| `evidence` | Secure upload, SHA-256, PDF extraction, image QC | Implemented (M3) |
+| `ai_provider` | `AIProvider` interface, `MockAIProvider`, `GeminiAIProvider` | Implemented (M3) |
+| `verification` | Document/image/telemetry cross-checks | Implemented (M4) |
+| `fraud` | Rules, `IsolationForest` + z-score anomalies, explanations | Implemented (M4) |
+| `claims` | Pure deterministic eligibility, payout formula, trace, hashes | Implemented (M5) |
+| `settlement` | Largest-remainder split and single-use authorization nonce | Implemented (M5) |
+| `payments / payout` | Mock and PayPal Sandbox adapters, idempotent retries | Implemented (M6) |
+| `dashboard` | Streamlit + AG Grid UI (`dashboard/app.py`) | Implemented (M7) |
+| `scenarios` | Repeatable end-to-end Scenario A / Scenario B runner | Implemented (M8) |
 
-## 5. Database design
-
-### Implemented in M0
+## 5. Database design (18 tables)
 
 | Table | Key fields |
 |---|---|
 | `api_keys` | `name`, `key_prefix`, `key_hash`, `role`, `active` |
 | `audit_logs` | `actor`, `action`, `entity_type`, `entity_id`, `request_id`, `before_json`, `after_json`, `prev_hash`, `hash` |
 | `idempotency_keys` | `scope`, `key`, `request_hash`, `status_code`, `response_json`; unique `(scope, key)` |
-
-### Planned domain tables
-
-| Table | Key fields |
-|---|---|
-| `parties` | role (supplier/logistics), name, sandbox payout email |
-| `shipments` | external ref, commodity, route, mode, declared value, times, status |
-| `policies` | coverage, premium, thresholds, coverage window, split rules, version |
-| `telemetry_readings` | shipment, device, timestamp, temperature, humidity, lat/lon, source |
-| `port_delays` | shipment, port, delay hours, reported_at |
-| `evidence_documents` | type, sha256, path, mime, size |
-| `evidence_extractions` | provider, model, prompt version, fields, confidence, raw response |
-| `verification_results` | check code, passed, details |
-| `fraud_signals` | rule code, severity, score, explanation, evidence refs |
-| `claims` | occurrence key, amounts, status, decision trace, input/decision hashes |
-| `settlements` | claim, total, currency, allocation, authorization nonce/hash |
-| `settlement_lines` | party, role, amount |
-| `payouts` | settlement (unique), idempotency key (unique), external id, status, attempts |
-| `payout_attempts` | attempt number, request/response summary, success |
+| `parties` | `role` (supplier/logistics), `name`, `payout_email`, `country_code` |
+| `shipments` | `external_ref` (unique), `commodity`, `origin_port`, `destination_port`, `mode`, `declared_value`, `route_waypoints`, `status` |
+| `policies` | `policy_number` (unique), `shipment_id`, `coverage_amount`, `premium_amount`, thresholds, coverage window, `supplier_split_pct`, `logistics_split_pct`, `version`, `status` |
+| `telemetry_readings` | `shipment_id`, `device_id`, `recorded_at`, `temperature_c`, `humidity_pct`, `latitude`, `longitude`, `source` |
+| `port_delays` | `shipment_id`, `port_name`, `delay_hours`, `reported_at` |
+| `violations` | `shipment_id`, `policy_id`, `trigger_code`, `reading_id`, `port_delay_id`, `threshold_value`, `actual_value`, `explanation` |
+| `evidence_documents` | `shipment_id`, `doc_type`, `sha256`, `storage_path`, `mime_type`, `file_size`, `extracted_text`, `perceptual_hash`, `blur_score`, `blur_passed` |
+| `evidence_extractions` | `document_id`, `provider`, `model_name`, `prompt_version`, `extracted_fields`, `confidence`, `raw_response` |
+| `verification_results` | `shipment_id`, `document_id`, `check_code`, `passed`, `details` |
+| `fraud_signals` | `shipment_id`, `rule_code`, `severity`, `score`, `explanation`, `evidence_refs` |
+| `claims` | `policy_id`, `trigger_code`, `occurrence_key` (unique tuple), `claimed_amount`, `approved_amount`, `status`, `decision_trace`, `input_hash`, `decision_hash`, `idempotency_key` (unique) |
+| `settlements` | `claim_id` (unique), `total_amount`, `currency`, `supplier_amount`, `logistics_amount`, `authorization_nonce` (unique), `authorization_hash`, `nonce_used` |
+| `settlement_lines` | `settlement_id`, `party_id`, `role`, `recipient_email`, `amount` |
+| `payouts` | `settlement_id` (unique), `idempotency_key` (unique), `provider`, `external_id`, `status`, `amount`, `currency`, `attempts` |
+| `payout_attempts` | `payout_id`, `attempt_number`, `request_summary`, `response_summary`, `success` |
 
 ## 6. State machines
 
@@ -109,51 +106,18 @@ Hard boundaries:
 - **Policy:** `DRAFT -> ACTIVE -> TRIGGERED -> SETTLED`, `EXPIRED`, `CANCELLED`
 - **Claim:** `SUBMITTED -> EVALUATING -> APPROVED | REJECTED | REVIEW_REQUIRED`;
   `APPROVED -> SETTLED -> PAYOUT_PENDING -> PAID`; `PAYOUT_FAILED`.
-  Only a human reviewer can resolve `REVIEW_REQUIRED`.
+  Only `reviewer` / `admin` can resolve `REVIEW_REQUIRED`.
 - **Payout:** `PENDING -> SENT -> SUCCEEDED | FAILED`; `FAILED -> RETRYING -> SENT`
 
 ## 7. Idempotency and financial integrity
 
 - Claim occurrence is unique per `(policy_id, trigger_code, occurrence_key)`.
-- One settlement per claim; one payout per settlement (`UNIQUE(settlement_id)`).
+- One settlement per claim (`UNIQUE(claim_id)`); one payout per settlement (`UNIQUE(settlement_id)`).
 - `UNIQUE(idempotency_key)` on claims and payouts.
 - PayPal `PayPal-Request-Id` equals the payout idempotency key.
 - Payment authorization is a single-use nonce bound to settlement id, amount,
   currency, and decision hash.
 - Money is handled with `Decimal` and stored as `NUMERIC(18,2)`; allocation uses
-  largest-remainder rounding so the sum exactly equals the settlement total.
+  largest-remainder rounding (`allocate_split`) so the sum exactly equals the settlement total.
 - Failed payouts retry with the same idempotency key; a second external payout
   cannot be created.
-
-## 8. Audit and security
-
-- API keys are stored as SHA-256 hashes with a display prefix only.
-- Roles: `admin`, `operator`, `reviewer`, `read_only`.
-- Startup refuses demo keys in production.
-- Structured JSON logs include a request ID; secrets are never logged.
-- Audit log is append-only and hash-chained (`prev_hash -> hash`). It is
-  tamper-evident for demonstration; production would add external anchoring.
-- Evidence uploads will be size/type/magic-byte validated, path-sanitized, and
-  stored content-addressed by SHA-256.
-- All timestamps are UTC-aware.
-
-## 9. Architecture decisions
-
-| Decision | Rationale |
-|---|---|
-| Modular monolith | Fast to build, simple to operate, keeps boundaries explicit |
-| SQLite default, Postgres optional | No Docker and no local PostgreSQL server |
-| Adapter interfaces for AI/payments | Deterministic mocks enable offline tests and demos |
-| Deterministic claims engine | Financial authorization must be reproducible and explainable |
-| AI observations only | Prevents an LLM from ever authorizing money |
-| Hash-chained audit log | Tamper-evident history without extra infrastructure |
-| Local content-addressed evidence | Simple, verifiable, no object storage dependency |
-
-## 10. Known limitations
-
-- SQLite has no row-level locking; rely on unique constraints and a single API
-  worker for the demo.
-- Live Gemini and PayPal paths remain unverified until credentials are supplied.
-- Audit chaining is serialized per process; concurrent writers would need a
-  database-level sequence or a Postgres advisory lock.
-- The simulator is synthetic and does not represent real IoT or weather feeds.

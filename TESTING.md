@@ -12,136 +12,45 @@
 
 | Layer | Scope | Status |
 |---|---|---|
-| Unit | Pure functions: splits, thresholds, fraud rules, decision hash | Planned M2-M5 |
-| Service | Audit chain, idempotency, state machine transitions | M0 partial |
-| API integration | FastAPI routes with a temporary SQLite database | M0 partial |
-| Adapter contract | Mock and live adapters share the same interface behavior | Planned M3/M6 |
-| End-to-end scenario | Scenario A valid claim and Scenario B fraud | Planned M8 |
-| Security | Auth, role enforcement, upload validation, redaction | M0 partial |
+| Unit | Pure functions: splits, thresholds, fraud rules, decision hash, simulator | Implemented & 7/7 executed |
+| Service | Audit chain, idempotency, state machine transitions, payout retry | Implemented & verified synchronously |
+| API integration | FastAPI routes with a temporary SQLite database (35 `TestClient` tests) | Implemented; pending local run outside sandbox |
+| Adapter contract | Mock and live adapters (`AIProvider`, `PaymentAdapter`) | Mock verified; live adapters require credentials |
+| End-to-end scenario | Scenario A valid claim and Scenario B fraud | Verified synchronously; API tests pending local run |
+| Security | Auth, role enforcement, upload validation, nonce, audit | Implemented across M0/M3/M6/M8 test suites |
 
-## 3. Test environment
+## 3. Current results
 
-- Temporary file-backed SQLite database created per test session.
-- Tables dropped and recreated before each test for isolation.
-- Demo API keys seeded programmatically.
-- `AI_PROVIDER=mock` and `PAYMENT_PROVIDER=mock` forced by the test config.
-- No network access is required.
-- FastAPI `TestClient` with lifespan enabled.
-
-## 4. Current results (Milestone M0)
-
-Command:
+- `python -m compileall -q app dashboard tests alembic` -> **passed (0 errors)**
+- `python -m pytest --collect-only -q` -> **42 tests collected**
+- Non-`TestClient` unit test subset (`python -m pytest -v -k "test_seeded_simulator_is_deterministic or test_identical_inputs_identical_decision_hash or test_inactive_policy_and_unmet_trigger_rejected or test_hard_block_rejects_and_review_routes or test_allocate_split_sums_exactly or test_pdf_fixture_is_not_encrypted or test_dashboard_api_client_instantiation"`): **7 passed, 35 deselected**.
+- Synchronous end-to-end verification (`ScenarioService.run` for A & B, 18 SQLite tables, payout retry with `MockPaymentProvider(force_fail=True)` -> `retry_payout`): **passed**.
+- Note: Full `pytest` execution (`TestClient` / `anyio` blocking portal) hangs inside the Windows sandbox due to `asyncio.run` socketpair restrictions. Run the full suite locally outside the sandbox:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+python -m pytest -q
 ```
 
-Actual output:
+## 4. Test inventory (42 collected tests)
 
-```
-............                                                             [100%]
-12 passed, 1 warning in 0.73s
-```
-
-Warning: `StarletteDeprecationWarning` from FastAPI's `TestClient` regarding
-`httpx`; it does not affect functionality.
-
-### Implemented tests
-
-| File | Tests | What is verified |
+| File | Tests | Scope |
 |---|---|---|
 | `tests/test_health.py` | 3 | `/health`, `/ready`, request ID propagation |
 | `tests/test_auth.py` | 4 | Missing/invalid key, actor identity, role enforcement |
 | `tests/test_audit.py` | 2 | Genesis link, hash chaining, audit API ordering |
 | `tests/test_idempotency.py` | 3 | Create, replay, conflict, in-progress handling |
+| `tests/test_m1_shipments_policies.py` | 5 | Parties, shipments, policies, lifecycles, RBAC, idempotency |
+| `tests/test_m2_monitoring.py` | 4 | Threshold/geofence/delay violations, validation, deduplication, seeded simulator |
+| `tests/test_m3_evidence.py` | 5 | PDF text extraction, encrypted PDF & path traversal rejection, image QC & duplicate hash |
+| `tests/test_m4_fraud.py` | 2 | Scenario B sensor manipulation hard-blocks, document timestamp mismatch |
+| `tests/test_m5_claims_settlement.py` | 5 | Pure decision hashing, fraud gates, largest-remainder split, duplicate occurrence block |
+| `tests/test_m6_payments.py` | 3 | Mock payout, duplicate payout block, invalid nonce rejection, safe retry |
+| `tests/test_m7_dashboard.py` | 1 | Dashboard API client instantiation |
+| `tests/test_m8_e2e_security.py` | 2 | Scenario A & Scenario B E2E API assertions |
+| `tests/test_m8_scenarios.py` | 3 | Scenario A & Scenario B E2E + unauthenticated domain route rejection |
 
-## 5. Additional M0 verification
+## 5. Known gaps
 
-- `python -m alembic upgrade head` applied `0001_initial` and reported head.
-- `python -m app.seed` initialized the database and seeded four roles.
-- Live Uvicorn smoke test:
-  - `GET /health` -> `{"status":"ok","app":"PCMSC","version":"0.1.0","env":"development"}`
-  - `GET /ready` -> `{"status":"ready"}`
-  - `GET /api/v1/auth/me` with the admin key -> `{"id":1,"name":"admin","role":"admin"}`
-
-## 6. Planned test matrix
-
-### M1 — Shipments and policies
-
-- Create shipment and policy; activate policy.
-- Reject invalid lifecycle transitions.
-- Unauthorized roles receive 401/403.
-- Idempotent creation returns the original resource.
-
-### M2 — Telemetry and monitoring
-
-- Temperature above/below threshold produces a violation fact.
-- Humidity, geofence, and port-delay violations.
-- Out-of-order and duplicate timestamps are handled deterministically.
-- Seeded simulator produces stable values across runs.
-
-### M3 — Evidence and AI
-
-- PDF text and page rendering with a generated fixture.
-- Reject oversize, wrong MIME, encrypted PDF, and path traversal names.
-- Mock AI extraction is deterministic and schema-valid.
-- Gemini adapter validated with a recorded fixture when a key is available.
-
-### M4 — Fraud
-
-- Scenario B manipulation triggers hard-block signals.
-- Impossible temperature delta, stuck sensor, missing data, geofence jump.
-- Document/telemetry timestamp mismatch.
-- Every signal carries an explanation and evidence reference.
-
-### M5 — Claims and settlement
-
-- Policy inactive, outside window, or trigger unmet -> rejected.
-- Same facts + policy -> identical decision hash.
-- Split allocation sums exactly to the settlement total.
-- Duplicate claim occurrence is blocked.
-- Fraud hard-block prevents approval; high risk routes to review.
-
-### M6 — Payments
-
-- Mock payout success path.
-- Duplicate payout attempt cannot create a second external payment.
-- Retry reuses the same idempotency key.
-- Failed payout transitions to `PAYOUT_FAILED` and can be retried safely.
-- Unauthorized settlement cannot be paid.
-
-### M7 — Dashboard
-
-- API client smoke tests.
-- Grid data loads for shipments, claims, fraud, payouts, audit.
-- Scenario runner triggers A and B.
-
-### M8 — End-to-end
-
-- Scenario A completes through split payout.
-- Scenario B ends with no payout and a fraud alert.
-- Full suite green from a clean database.
-- Documentation matches verified behavior.
-
-## 7. Coverage
-
-Coverage is measured with `pytest-cov` once domain modules exist. The target is
-meaningful coverage of financial and security paths rather than a vanity number.
-Command:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest --cov=app --cov-report=term-missing
-```
-
-## 8. Test data policy
-
-- All PDFs and images are generated locally as fixtures.
-- Telemetry is synthetic and seeded.
-- No real shipment, personal, or payment data is used.
-- Sandbox/mock payment identifiers only.
-
-## 9. Known gaps
-
+- 35 `TestClient` API tests require local execution outside the sandboxed `asyncio` environment.
 - No live Gemini or PayPal tests until credentials are provided.
-- No concurrency stress test yet; SQLite is single-writer.
-- Audit chain is tested within one process only.
+- `alembic upgrade head` for `0002_domain_tables` pending local `alembic` install.

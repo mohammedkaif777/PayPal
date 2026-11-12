@@ -12,6 +12,8 @@ os.environ["REVIEWER_API_KEY"] = "demo-reviewer-key"
 os.environ["READONLY_API_KEY"] = "demo-readonly-key"
 os.environ["AI_PROVIDER"] = "mock"
 os.environ["PAYMENT_PROVIDER"] = "mock"
+os.environ["EVIDENCE_DIR_OVERRIDE"] = str(_TMP / "evidence")
+(_TMP / "evidence").mkdir(parents=True, exist_ok=True)
 
 import pytest
 from fastapi.testclient import TestClient
